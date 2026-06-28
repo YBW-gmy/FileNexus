@@ -27,13 +27,16 @@ static class Program
         };
 
         var form = new MainForm();
-        // 命令行 --capture 参数：自动截图后退出
+        // 命令行 --capture 参数：自动索引数据 + 完整窗口截图
         if (args.Length > 0 && args[0] == "--capture")
         {
             form.Shown += async (s, e) =>
             {
-                await Task.Delay(1500); // 等待窗口完全渲染
-                form.DoCaptureScreenshots();
+                await Task.Delay(1000); // 等待窗口完全渲染
+                // 1. 先自动索引系统目录填充数据
+                await form.AutoIndexForCapture();
+                // 2. 截取完整窗口（含标题栏、菜单、状态栏）
+                form.CaptureFullWindow();
                 Application.Exit();
             };
         }

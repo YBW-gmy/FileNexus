@@ -247,7 +247,7 @@ public partial class MainForm : Form
         // 截图菜单
         var menuStrip = new MenuStrip();
         var helpMenu = new ToolStripMenuItem("工具");
-        var captureMenu = new ToolStripMenuItem("📷 生成所有截图", null, (s, e) => CaptureAllScreenshots());
+        var captureMenu = new ToolStripMenuItem("📷 生成所有截图", null, (s, e) => CaptureFullWindow());
         helpMenu.DropDownItems.Add(captureMenu);
         menuStrip.Items.Add(helpMenu);
         Controls.Add(menuStrip);
@@ -602,47 +602,137 @@ public partial class MainForm : Form
     #region 工具方法
 
     /// <summary>
-    /// 公开的截图方法，供Program.cs命令行调用
+    /// 截图前自动索引数据：扫描C:\Windows\Media目录（音频）+ C:\Windows\Web目录（图片）
+    /// 填充数据库、列表视图和媒体预览
     /// </summary>
-    public void DoCaptureScreenshots()
+    public async Task AutoIndexForCapture()
     {
-        CaptureAllScreenshots();
+        try
+        {
+            _lblStatus!.Text = "正在为截图准备数据...";
+            _tsProgress!.Visible = true;
+
+            var scanPaths = new[] {
+                @"C:\Windows\Web",      // Windows壁纸（图片丰富）
+                @"C:\Windows\Media",    // 系统音效
+                @"C:\Windows\Fonts",    // 字体文件（类型多样）
+            };
+
+            var allFiles = new List<Models.MediaFileInfo>();
+            foreach (var path in scanPaths)
+            {
+                if (!Directory.Exists(path)) continue;
+                _scanCts?.Cancel();
+                _scanCts = new CancellationTokenSource();
+                try
+                {
+                    var files = await _scannerService!.ScanDirectoryAsync(
+                        path, "*.*", null, _scanCts.Token);
+                    allFiles.AddRange(files);
+                }
+                catch { }
+            }
+
+            if (allFiles.Count > 0)
+            {
+                _dbService!.BatchInsertFiles(allFiles);
+                _lblDbStats!.Text = $"已索引 {allFiles.Count} 个文件";
+                _lblStatus!.Text = $"索引完成: {allFiles.Count} 个文件";
+            }
+
+            // 刷新各视图
+            if (allFiles.Count > 0)
+            {
+                _txtBrowserPath!.Text = @"C:\Windows\Web";
+                _currentDir = @"C:\Windows\Web";
+                RefreshFileList(@"C:\Windows\Web");
+
+                // 切换到Tab1展示目录树
+                if (Directory.Exists(@"C:\Windows\Web"))
+                {
+                    var node = _treeView!.Nodes.Cast<TreeNode>()
+                        .FirstOrDefault(n => n.Tag?.ToString() == @"C:\");
+                    if (node != null)
+                    {
+                        node.Expand();
+                        Application.DoEvents();
+                        Thread.Sleep(300);
+                        // 找到Windows节点
+                        var winNode = node.Nodes.Cast<TreeNode>()
+                            .FirstOrDefault(n => n.Text == "Windows");
+                        winNode?.Expand();
+                    }
+                }
+
+                RefreshCharts();
+                RefreshDbGrid();
+
+                // 填充媒体预览列表
+                var mediaFiles = allFiles
+                    .Where(f => f.FileType == "图片")
+                    .Take(50)
+                    .Select(f => f.FullPath)
+                    .ToList();
+                _lbMediaFiles!.Items.Clear();
+                foreach (var mf in mediaFiles)
+                    _lbMediaFiles.Items.Add(mf);
+                if (_lbMediaFiles.Items.Count > 0)
+                    _lbMediaFiles.SelectedIndex = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            _lblStatus!.Text = $"数据准备失败: {ex.Message}";
+        }
+        finally
+        {
+            _tsProgress!.Visible = false;
+        }
     }
 
     /// <summary>
-    /// 自动截取每个标签页的界面并保存为PNG文件
-    /// 使用Control.DrawToBitmap进行自截图
+    /// 截取完整窗口（含标题栏、菜单栏、状态栏）
+    /// 使用Form.DrawToBitmap截取整个窗体
     /// </summary>
-    private void CaptureAllScreenshots()
+    public void CaptureFullWindow()
     {
         try
         {
             string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "screenshots");
             Directory.CreateDirectory(dir);
 
+            var tabNames = new[] { "文件浏览", "文件搜索", "统计图表", "文件同步", "媒体预览", "数据库管理" };
+
             for (int i = 0; i < _tabControl!.TabCount; i++)
             {
                 _tabControl.SelectedIndex = i;
                 _tabControl.Refresh();
-                Application.DoEvents(); // 让UI完成渲染
-                Thread.Sleep(500);
+                Application.DoEvents();
+                Thread.Sleep(600);
 
-                var tabPage = _tabControl.SelectedTab;
-                if (tabPage == null) continue;
-
-                var bmp = new Bitmap(tabPage.Width, tabPage.Height);
-                tabPage.DrawToBitmap(bmp, new Rectangle(0, 0, tabPage.Width, tabPage.Height));
-                string fileName = $"tab{i + 1}_{tabPage.Text!.Replace(" ", "").Replace("📁", "").Replace("🔍", "").Replace("📊", "").Replace("🔄", "").Replace("🖼️", "").Replace("🗄️", "")}.png";
+                // 截取整个窗体，而非仅TabPage
+                var bmp = new Bitmap(Width, Height);
+                DrawToBitmap(bmp, new Rectangle(0, 0, Width, Height));
+                string fileName = $"tab{i + 1}_{tabNames[i]}.png";
                 bmp.Save(Path.Combine(dir, fileName), System.Drawing.Imaging.ImageFormat.Png);
                 bmp.Dispose();
             }
+
             _tabControl.SelectedIndex = 0;
-            string msg = $"截图已保存到:\n{dir}\n\n共 {_tabControl.TabCount} 张";
-            MessageBox.Show(msg, "FileNexus - 截图完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+            // 复制到项目screenshots目录
+            string projDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "screenshots");
+            try
+            {
+                Directory.CreateDirectory(projDir);
+                foreach (var f in Directory.GetFiles(dir))
+                    File.Copy(f, Path.Combine(projDir, Path.GetFileName(f)), true);
+            }
+            catch { }
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"截图失败: {ex.Message}", "FileNexus", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"截图失败: {ex.Message}", "FileNexus");
         }
     }
 
