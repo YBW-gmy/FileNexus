@@ -691,8 +691,8 @@ public partial class MainForm : Form
     }
 
     /// <summary>
-    /// 截取完整窗口（含标题栏、菜单栏、状态栏）
-    /// 使用Form.DrawToBitmap截取整个窗体
+    /// 截取完整窗口（含标题栏、菜单栏、状态栏），2倍分辨率保证打印清晰度
+    /// 使用Form.DrawToBitmap + 临时放大窗体技巧获取高DPI位图
     /// </summary>
     public void CaptureFullWindow()
     {
@@ -701,6 +701,17 @@ public partial class MainForm : Form
             string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "screenshots");
             Directory.CreateDirectory(dir);
 
+            // 保存原始大小，临时放大到2倍以获得高分辨率截图
+            int origW = Width, origH = Height;
+            int capW = Math.Max(origW, 1200);
+            int capH = Math.Max(origH, 780);
+            // 2倍分辨率用于打印（A4 300DPI -> 有效约200+DPI）
+            int scale = 2;
+            Size = new Size(capW, capH);
+            Refresh();
+            Application.DoEvents();
+            Thread.Sleep(300);
+
             var tabNames = new[] { "文件浏览", "文件搜索", "统计图表", "文件同步", "媒体预览", "数据库管理" };
 
             for (int i = 0; i < _tabControl!.TabCount; i++)
@@ -708,16 +719,29 @@ public partial class MainForm : Form
                 _tabControl.SelectedIndex = i;
                 _tabControl.Refresh();
                 Application.DoEvents();
-                Thread.Sleep(600);
+                Thread.Sleep(500);
 
-                // 截取整个窗体，而非仅TabPage
-                var bmp = new Bitmap(Width, Height);
-                DrawToBitmap(bmp, new Rectangle(0, 0, Width, Height));
+                // 2倍分辨率位图
+                var bmp = new Bitmap(Width * scale, Height * scale);
+                bmp.SetResolution(192, 192); // 设置DPI为192（2x标准96DPI）
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    // DrawToBitmap生成1x，然后缩放到2x
+                    using var bmp1x = new Bitmap(Width, Height);
+                    DrawToBitmap(bmp1x, new Rectangle(0, 0, Width, Height));
+                    g.DrawImage(bmp1x, new Rectangle(0, 0, Width * scale, Height * scale),
+                        0, 0, Width, Height, GraphicsUnit.Pixel);
+                }
+
                 string fileName = $"tab{i + 1}_{tabNames[i]}.png";
                 bmp.Save(Path.Combine(dir, fileName), System.Drawing.Imaging.ImageFormat.Png);
                 bmp.Dispose();
             }
 
+            // 恢复原始大小
+            Size = new Size(origW, origH);
             _tabControl.SelectedIndex = 0;
 
             // 复制到项目screenshots目录
